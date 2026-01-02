@@ -1,0 +1,95 @@
+bundle:
+  name: data_ingestion_kaggle
+  uuid: <uuid-placeholder>
+
+include:
+  - resources/*.yml
+
+sync:
+  exclude:
+    - src/dashboard/Ecom_Marketplace_Dashboard.lvdash.json # Exclude dashboard JSON from syncing
+
+variables:
+  warehouse_id_dev:
+    default: ""
+  warehouse_id_prod:
+    default: ""
+  warehouse_id:
+    description: "The ID of the SQL Warehouse to use for the dashboard."
+  experiment_name:
+    description: Experiment name for the model training.
+    default: /Users/${workspace.current_user.userName}/${bundle.target}-ecommerce_user_behaviour-experiment
+  model_name:
+    description: Model name for the model training.
+    default: ecommerce_user_behaviour-model
+  catalog_name:
+    description: The catalog name to save the trained model
+  schema_name:
+    description: The schema name within the catalog
+  data_source:
+    description: The data source to use for the job
+    default: kaggle
+  region:
+    description: The region where the Databricks workspace is located.
+    default: us-east-1a
+
+permissions:
+  - user_name: abc@xyz.co
+    level: CAN_MANAGE
+  - service_principal_name: <service-principal-placeholder>
+    level: CAN_MANAGE
+
+targets:
+  dev:
+    # default: true
+    workspace:
+      host: <host-placeholder>
+      root_path: /Workspace/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      warehouse_id: ${var.warehouse_id_dev}
+      catalog_name: <catalog-placeholder>
+      catalog_name: dummy
+      schema_name: ecom_gold
+    presets:
+      name_prefix: 'dev_'
+      pipelines_development: true
+      trigger_pause_status: PAUSED
+      jobs_max_concurrent_runs: 10
+    bundle:
+      deployment:
+        lock:
+          enabled: false
+
+  prod:
+    mode: production
+    workspace:
+      host: <>host-placeholder>
+      root_path: /Workspace/.bundle/${bundle.name}/${bundle.target}
+    permissions:
+      - service_principal_name: <service-principal-placeholder>
+        level: CAN_MANAGE
+    variables:
+      warehouse_id: ${var.warehouse_id_prod}
+      catalog_name: <catalog-placeholder>
+      schema_name: ecom_gold
+
+
+  terraform-fresh:
+    # mode: production
+    default: true
+    workspace:
+      host: <host-placeholder
+      root_path: /Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      warehouse_id: <warehouse-id-placeholder>
+      catalog_name: dummy
+      schema_name: ecom_gold
+    presets:
+      # name_prefix: 'dev_'
+      pipelines_development: true
+      trigger_pause_status: PAUSED
+      jobs_max_concurrent_runs: 10
+    bundle:
+      deployment:
+        lock:
+          enabled: false

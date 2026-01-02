@@ -1,0 +1,57 @@
+# The main job for my_project.
+resources:
+  jobs:
+    orchestration_job:
+      name: orchestration_job
+
+      email_notifications:
+        on_failure:
+          - abc@xyz.co
+      
+      parameters:
+        - name: orchestration_data_source
+          default: "kaggle" # Default for the orchestrator
+
+      tasks:
+        - task_key: bronze
+          run_job_task:
+            job_id: ${resources.jobs.data_ingestion_kaggle_job.id}
+            job_parameters:
+              notebook_source: "{{job.parameters.orchestration_data_source}}"
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          run_job_task:
+            job_id: ${resources.jobs.ecom_marketplace_data_silver.id}
+        - task_key: gold
+          depends_on:
+            - task_key: silver
+          run_job_task:
+            job_id: ${resources.jobs.gold_pipeline.id}
+
+
+      job_clusters:
+        - job_cluster_key: Job_cluster
+          new_cluster:
+            policy_id: "<policy_id>"  # Add this line
+            cluster_name: ""
+            spark_version: 15.4.x-scala2.12
+            aws_attributes:
+              first_on_demand: 1
+              availability: SPOT_WITH_FALLBACK
+              zone_id: ${var.region}
+              spot_bid_price_percent: 100
+              ebs_volume_type: GENERAL_PURPOSE_SSD
+              ebs_volume_count: 3
+              ebs_volume_size: 100
+            node_type_id: mg-fleet.xlarge
+            spark_env_vars:
+              PYSPARK_PYTHON: /databricks/python3/bin/python3
+            enable_elastic_disk: false
+            data_security_mode: SINGLE_USER
+            runtime_engine: STANDARD
+            autoscale:
+              min_workers: 1
+              max_workers: 8
+      queue:
+        enabled: true

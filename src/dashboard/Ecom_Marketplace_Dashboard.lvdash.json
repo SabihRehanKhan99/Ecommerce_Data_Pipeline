@@ -1,0 +1,3733 @@
+{
+  "datasets": [
+    {
+      "name": "cb4b3869",
+      "displayName": "Calendar",
+      "queryLines": [
+        "SELECT\r\n",
+        "  calendar_date,\r\n",
+        "  YEAR(calendar_date) AS year,\r\n",
+        "  MONTH(calendar_date) AS month,\r\n",
+        "  DAY(calendar_date) AS day,\r\n",
+        "  WEEKOFYEAR(calendar_date) AS week_of_year,\r\n",
+        "  DAYOFWEEK(calendar_date) AS day_of_week, -- Sunday = 1, Monday = 2, ..., Saturday = 7\r\n",
+        "  DATE_FORMAT(calendar_date, 'EEEE') AS day_name, -- Full day name (e.g., Monday)\r\n",
+        "  DATE_FORMAT(calendar_date, 'MMMM') AS month_name, -- Full month name (e.g., January)\r\n",
+        "  QUARTER(calendar_date) AS quarter,\r\n",
+        "  CASE WHEN DAYOFWEEK(calendar_date) IN (1, 7) THEN TRUE ELSE FALSE END AS is_weekend,\r\n",
+        "  LAST_DAY(calendar_date) AS last_day_of_month\r\n",
+        "FROM\r\n",
+        "  EXPLODE(\r\n",
+        "    SEQUENCE(DATE '2019-10-01', DATE '2020-04-30', INTERVAL 1 DAY)\r\n",
+        "  ) AS t(calendar_date)\r\n",
+        "ORDER BY\r\n",
+        "  calendar_date;\r\n"
+      ]
+    },
+    {
+      "name": "c8f5401a",
+      "displayName": "performance_metrics",
+      "queryLines": [
+        "\r\n",
+        "WITH dimmed AS (\r\n",
+        "  -- 1) Select all data and create the dynamic dimension column\r\n",
+        "  SELECT\r\n",
+        "    date,\r\n",
+        "    -- Handle NULL, empty, or whitespace-only categories/brands for robust grouping\r\n",
+        "    CASE :series\r\n",
+        "      WHEN 'category'       THEN COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized')\r\n",
+        "      WHEN 'brand'          THEN COALESCE(NULLIF(TRIM(brand), ''), 'Unknown Brand')\r\n",
+        "      WHEN 'category-brand' THEN concat(COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized'),' - ',COALESCE(NULLIF(TRIM(brand), ''), 'Unknown Brand'))\r\n",
+        "      -- NEW: Add product_id as a dimension. Assuming product_id is never NULL or empty.\r\n",
+        "      WHEN 'product_id'     THEN CAST(product_id AS STRING)\r\n",
+        "    END AS dim,\r\n",
+        "    checkouts,\r\n",
+        "    views,\r\n",
+        "    add_to_cart,\r\n",
+        "    revenue,\r\n",
+        "    orders\r\n",
+        "  FROM techwards.ecom_gold.performance_metrics -- No more WHERE clause\r\n",
+        "),\r\n",
+        "\r\n",
+        "-- 2) rank dims by total checkouts, keep only top N\r\n",
+        "ranked AS (\r\n",
+        "  SELECT\r\n",
+        "    dim,\r\n",
+        "    SUM(checkouts)            AS total_checkouts,\r\n",
+        "    ROW_NUMBER() OVER (\r\n",
+        "      ORDER BY SUM(checkouts) DESC\r\n",
+        "    ) AS rn\r\n",
+        "  FROM dimmed\r\n",
+        "  GROUP BY dim\r\n",
+        "),\r\n",
+        "\r\n",
+        "top_dims AS (\r\n",
+        "  SELECT dim\r\n",
+        "  FROM ranked\r\n",
+        "  WHERE rn <= CAST(:top_n AS INT)\r\n",
+        "),\r\n",
+        "\r\n",
+        "-- 3) apply time‐grain bucket and filter to top dims\r\n",
+        "periodized AS (\r\n",
+        "  SELECT\r\n",
+        "    -- true date for sorting\r\n",
+        "    CASE :period\r\n",
+        "      WHEN 'daily'   THEN date_trunc('day',   date)\r\n",
+        "      WHEN 'weekly'  THEN date_trunc('week',  date)\r\n",
+        "      WHEN 'monthly' THEN date_trunc('month', date)\r\n",
+        "    END AS period_order,\r\n",
+        "\r\n",
+        "    -- label shown on X‐axis\r\n",
+        "    CASE :period\r\n",
+        "      WHEN 'daily'   THEN date_format(date,   'yyyy-MM-dd')\r\n",
+        "      WHEN 'weekly'  THEN CAST(weekofyear(date) AS STRING)\r\n",
+        "      WHEN 'monthly' THEN date_format(date,   'MMM')\r\n",
+        "    END AS period_label,\r\n",
+        "    date,\r\n",
+        "    dim,\r\n",
+        "    checkouts,\r\n",
+        "    views,\r\n",
+        "    add_to_cart,\r\n",
+        "    revenue,\r\n",
+        "    orders\r\n",
+        "  FROM dimmed\r\n",
+        "  WHERE dim IN (SELECT dim FROM top_dims)\r\n",
+        ")\r\n",
+        "\r\n",
+        "-- 4) final aggregation & ordering\r\n",
+        "SELECT\r\n",
+        "  date,\r\n",
+        "  period_label,\r\n",
+        "  dim                             AS dimension,\r\n",
+        "  SUM(checkouts)                  AS total_checkouts,\r\n",
+        "  SUM(views)                      AS total_views,\r\n",
+        "  SUM(add_to_cart)                AS total_add_to_cart,\r\n",
+        "  SUM(revenue)                    AS total_revenue,\r\n",
+        "  SUM(orders)                     AS total_orders\r\n",
+        "  -- ... (your other calculated metrics like AOV, conversion rates, etc.)\r\n",
+        "FROM periodized\r\n",
+        "GROUP BY period_order, period_label, dim, date\r\n",
+        "ORDER BY period_order, total_checkouts DESC;\r\n"
+      ],
+      "parameters": [
+        {
+          "displayName": "series",
+          "keyword": "series",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "category"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "top_n",
+          "keyword": "top_n",
+          "dataType": "INTEGER",
+          "defaultSelection": {
+            "values": {
+              "dataType": "INTEGER",
+              "values": [
+                {
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "period",
+          "keyword": "period",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "monthly"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "columns": [
+        {
+          "displayName": "views",
+          "description": "",
+          "expression": "sum(total_views)"
+        },
+        {
+          "displayName": "checkouts",
+          "description": "",
+          "expression": "sum(total_checkouts)"
+        },
+        {
+          "displayName": "revenue",
+          "description": "",
+          "expression": "sum(total_revenue)"
+        },
+        {
+          "displayName": "cart_addition_rate",
+          "description": "",
+          "expression": "sum(total_add_to_cart) / sum(total_views)"
+        },
+        {
+          "displayName": "cart_conversion_rate",
+          "description": "",
+          "expression": "sum(total_checkouts) / sum(total_add_to_cart)"
+        },
+        {
+          "displayName": "AOV",
+          "description": "",
+          "expression": "sum(total_revenue) / sum(total_orders)"
+        },
+        {
+          "displayName": "Cart_Abandonment_Rate",
+          "description": "",
+          "expression": "(sum(total_add_to_cart) - sum(total_checkouts)) / sum(total_add_to_cart)"
+        },
+        {
+          "displayName": "carts",
+          "description": "",
+          "expression": "sum(total_add_to_cart)"
+        },
+        {
+          "displayName": "conversion",
+          "description": "",
+          "expression": "sum(total_checkouts)/sum(total_views)"
+        }
+      ]
+    },
+    {
+      "name": "7e69face",
+      "displayName": "performance_metrics_(KPIs Only)",
+      "queryLines": [
+        "WITH dimmed AS (\r\n",
+        "  -- 1) Select all data and create the dynamic dimension column\r\n",
+        "  SELECT\r\n",
+        "    date,\r\n",
+        "    -- Handle NULL, empty, or whitespace-only categories/brands for robust grouping\r\n",
+        "    CASE :series\r\n",
+        "      WHEN 'category'       THEN COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized')\r\n",
+        "      WHEN 'brand'          THEN COALESCE(NULLIF(TRIM(brand), ''), 'Unknown Brand')\r\n",
+        "      WHEN 'category-brand' THEN concat(COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized'),' - ',COALESCE(NULLIF(TRIM(brand), ''), 'Unknown Brand'))\r\n",
+        "      -- NEW: Add product_id as a dimension. Assuming product_id is never NULL or empty.\r\n",
+        "      WHEN 'product_id'     THEN CAST(product_id AS STRING)\r\n",
+        "    END AS dim,\r\n",
+        "    checkouts,\r\n",
+        "    views,\r\n",
+        "    add_to_cart,\r\n",
+        "    revenue,\r\n",
+        "    orders\r\n",
+        "  FROM techwards.ecom_gold.performance_metrics\r\n",
+        "),\r\n",
+        "\r\n",
+        "-- 2) apply time-grain bucket (fixed to daily)\r\n",
+        "periodized AS (\r\n",
+        "  SELECT\r\n",
+        "    -- true date for sorting and display\r\n",
+        "    date_trunc('day', date) AS period_order,\r\n",
+        "    date_format(date, 'yyyy-MM-dd') AS period_label, -- Format date as yyyy-MM-dd [1, 7]\r\n",
+        "    dim,\r\n",
+        "    checkouts,\r\n",
+        "    views,\r\n",
+        "    add_to_cart,\r\n",
+        "    revenue,\r\n",
+        "    orders\r\n",
+        "  FROM dimmed\r\n",
+        ")\r\n",
+        "\r\n",
+        "-- 3) final aggregation & ordering\r\n",
+        "SELECT\r\n",
+        "  cast(period_label as date) AS date, -- Renamed for clarity as per your request\r\n",
+        "  dim AS dimension,\r\n",
+        "  SUM(views) AS total_views,\r\n",
+        "  SUM(checkouts) AS total_checkouts,\r\n",
+        "  SUM(add_to_cart) AS total_add_to_cart,\r\n",
+        "  SUM(revenue) AS total_revenue,\r\n",
+        "  SUM(orders) AS total_orders\r\n",
+        "FROM periodized\r\n",
+        "GROUP BY period_order, period_label, dim\r\n",
+        "ORDER BY period_order, total_checkouts DESC;\r\n"
+      ],
+      "parameters": [
+        {
+          "displayName": "series",
+          "keyword": "series",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "category"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "columns": [
+        {
+          "displayName": "views",
+          "description": "",
+          "expression": "sum(total_views)"
+        },
+        {
+          "displayName": "carts",
+          "description": "",
+          "expression": "sum(total_add_to_cart)"
+        },
+        {
+          "displayName": "checkouts",
+          "description": "",
+          "expression": "sum(total_checkouts)"
+        },
+        {
+          "displayName": "revenue",
+          "description": "",
+          "expression": "sum(total_revenue)"
+        },
+        {
+          "displayName": "conversion",
+          "description": "",
+          "expression": "sum(total_checkouts)/sum(total_views)"
+        },
+        {
+          "displayName": "cart_addition_rate",
+          "description": "",
+          "expression": "sum(total_add_to_cart) / sum(total_views)"
+        },
+        {
+          "displayName": "cart_conversion_rate",
+          "description": "",
+          "expression": "sum(total_checkouts) / sum(total_add_to_cart)"
+        },
+        {
+          "displayName": "Cart_Abandonment_Rate",
+          "description": "",
+          "expression": "(sum(total_add_to_cart) - sum(total_checkouts)) / sum(total_add_to_cart)"
+        },
+        {
+          "displayName": "AOV",
+          "description": "",
+          "expression": "sum(total_revenue) / sum(total_orders)"
+        }
+      ]
+    },
+    {
+      "name": "5fd99b79",
+      "displayName": "engagement_metrics",
+      "queryLines": [
+        "SELECT * FROM techwards.ecom_gold.engagement_metrics"
+      ],
+      "columns": [
+        {
+          "displayName": "Bounce_Rate",
+          "description": "",
+          "expression": "sum(new_single_view_sessions) / sum(new_sessions)"
+        },
+        {
+          "displayName": "avg_session_duration_in_min",
+          "description": "",
+          "expression": "SUM(total_sd) / SUM(total_sessions)"
+        },
+        {
+          "displayName": "Avg_Session_Engagement_Score",
+          "description": "",
+          "expression": "SUM(total_engagement_score) / SUM(total_sessions)"
+        },
+        {
+          "displayName": "avg_views",
+          "description": "",
+          "expression": "SUM(total_vps) / SUM(total_sessions)"
+        },
+        {
+          "displayName": "avg_revenue",
+          "description": "",
+          "expression": "SUM(total_rps) / SUM(total_sessions)"
+        }
+      ]
+    },
+    {
+      "name": "edead479",
+      "displayName": "Customer Cohort",
+      "queryLines": [
+        "\r\n",
+        "SELECT\r\n",
+        "  *,\r\n",
+        "  YEAR(cohort_month) AS year,\r\n",
+        "  DATE_FORMAT(cohort_month, 'MMM') AS Month,\r\n",
+        "  DATE_FORMAT(cohort_month, 'MMM yyyy') AS Month_year\r\n",
+        "FROM\r\n",
+        "  ecom_gold.customer_cohort_analysis;\r\n",
+        "\r\n"
+      ],
+      "columns": [
+        {
+          "displayName": "Retention%",
+          "description": "",
+          "expression": "sum(retained_users) / sum(cohort_size)"
+        }
+      ]
+    },
+    {
+      "name": "bcb2c9bf",
+      "displayName": "Categorized Customers",
+      "queryLines": [
+        "\r\n",
+        "WITH base_data AS (\r\n",
+        "  SELECT\r\n",
+        "    purchase_date,\r\n",
+        "    user_id,\r\n",
+        "    purchase_number\r\n",
+        "  FROM\r\n",
+        "    ecom_gold.user_purchase_history\r\n",
+        "  -- Optional: Add a date range filter for performance\r\n",
+        "  -- WHERE purchase_date BETWEEN :date_range.start AND :date_range.end\r\n",
+        ")\r\n",
+        "-- Final aggregation to count new, repeat, and loyal customers\r\n",
+        "SELECT\r\n",
+        "  purchase_date,\r\n",
+        "  -- New Customers: Users whose 1st purchase occurred in this period\r\n",
+        "  COUNT(DISTINCT CASE WHEN purchase_number = 1 THEN user_id ELSE NULL END) AS new_customers,\r\n",
+        "  -- Repeat Customers: Users whose 2nd purchase occurred in this period\r\n",
+        "  COUNT(DISTINCT CASE WHEN purchase_number = 2 THEN user_id ELSE NULL END) AS repeat_customers,\r\n",
+        "  -- Loyal Customers: Users whose 3rd or more purchase occurred in this period\r\n",
+        "  COUNT(DISTINCT CASE WHEN purchase_number > 2 THEN user_id ELSE NULL END) AS loyal_customers,\r\n",
+        "  YEAR(purchase_date) AS year,\r\n",
+        "  DATE_FORMAT(purchase_date, 'MMM') AS Month,\r\n",
+        "  DATE_FORMAT(purchase_date, 'MMM yyyy') AS Month_year\r\n",
+        "FROM\r\n",
+        "  base_data\r\n",
+        "GROUP BY\r\n",
+        "  purchase_date\r\n",
+        "ORDER BY\r\n",
+        "  purchase_date;\r\n"
+      ],
+      "columns": [
+        {
+          "displayName": "total_customers",
+          "description": "",
+          "expression": "sum(new_customers) + sum(repeat_customers) + sum(loyal_customers)"
+        },
+        {
+          "displayName": "total_new_customers",
+          "description": "",
+          "expression": "sum(new_customers)"
+        },
+        {
+          "displayName": "total_repeat_customers",
+          "description": "",
+          "expression": "sum(repeat_customers)"
+        },
+        {
+          "displayName": "total_loyal_customers",
+          "description": "",
+          "expression": "sum(loyal_customers)"
+        },
+        {
+          "displayName": "new_customers_%",
+          "description": "",
+          "expression": "sum(new_customers)/ (sum(new_customers) + sum(repeat_customers) + sum(loyal_customers))"
+        },
+        {
+          "displayName": "repeat_customers_%",
+          "description": "",
+          "expression": "sum(repeat_customers)/ (sum(new_customers) + sum(repeat_customers) + sum(loyal_customers))"
+        },
+        {
+          "displayName": "loyal_customers_%",
+          "description": "",
+          "expression": "sum(loyal_customers)/ (sum(new_customers) + sum(repeat_customers) + sum(loyal_customers))"
+        }
+      ]
+    },
+    {
+      "name": "3bb97ca4",
+      "displayName": "Market Basket Analysis",
+      "queryLines": [
+        "\r\n",
+        "SELECT\r\n",
+        "  item_a_value AS row_item,\r\n",
+        "  item_b_value AS column_item,\r\n",
+        "  -- Calculate Confidence (A -> B)\r\n",
+        "  CAST(SUM(count_a_and_b) AS DOUBLE) / SUM(count_a) AS confidence_a_to_b\r\n",
+        "FROM\r\n",
+        "  ecom_gold.market_basket_analysis_counts\r\n",
+        "WHERE\r\n",
+        "  item_type = :mba_item_type -- Dashboard parameter for 'product_id', 'category', or 'brand'\r\n",
+        "GROUP BY\r\n",
+        "  item_a_value,\r\n",
+        "  item_b_value\r\n",
+        "ORDER BY\r\n",
+        "  item_a_value,\r\n",
+        "  item_b_value;\r\n"
+      ],
+      "parameters": [
+        {
+          "displayName": "mba_item_type",
+          "keyword": "mba_item_type",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "category"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "59712f98",
+      "displayName": "Top 10 Market Basket",
+      "queryLines": [
+        "WITH\r\n",
+        "  confidence_calculations AS (\r\n",
+        "    -- First, calculate the confidence for all pairs of the selected item type\r\n",
+        "    SELECT\r\n",
+        "      item_a_value,\r\n",
+        "      item_b_value,\r\n",
+        "      -- Calculate Confidence (A -> B) and handle potential division by zero\r\n",
+        "      CAST(SUM(count_a_and_b) AS DOUBLE) / NULLIF(SUM(count_a), 0) AS confidence_a_to_b\r\n",
+        "    FROM\r\n",
+        "      ecom_gold.market_basket_analysis_counts\r\n",
+        "    WHERE\r\n",
+        "      -- This is the dashboard parameter for 'category', 'brand', or 'product_id'\r\n",
+        "      item_type = :mba_item_type\r\n",
+        "      -- Exclude self-comparisons (e.g., category A -> category A)\r\n",
+        "      AND item_a_value != item_b_value\r\n",
+        "    GROUP BY\r\n",
+        "      item_a_value,\r\n",
+        "      item_b_value\r\n",
+        "  ),\r\n",
+        "  ranked_confidence AS (\r\n",
+        "    -- Next, rank the calculated confidences to find the top performers\r\n",
+        "    SELECT\r\n",
+        "      item_a_value,\r\n",
+        "      item_b_value,\r\n",
+        "      confidence_a_to_b,\r\n",
+        "      -- Use ROW_NUMBER() to assign a unique rank to each row, ignoring ties.\r\n",
+        "      ROW_NUMBER() OVER (ORDER BY confidence_a_to_b DESC) as row_num\r\n",
+        "    FROM\r\n",
+        "      confidence_calculations\r\n",
+        "    -- Filter out any pairs where confidence could not be calculated\r\n",
+        "    WHERE confidence_a_to_b IS NOT NULL\r\n",
+        "  )\r\n",
+        "-- Finally, format the output as requested and select only the top 10\r\n",
+        "SELECT\r\n",
+        "  -- This CONCAT function creates the 'dimension' column you wanted\r\n",
+        "  CONCAT(item_a_value, ' -> ', item_b_value) AS dimension,\r\n",
+        "  confidence_a_to_b\r\n",
+        "FROM\r\n",
+        "  ranked_confidence\r\n",
+        "WHERE\r\n",
+        "  row_num <= 10 -- This filter will now work perfectly for all dimensions\r\n",
+        "ORDER BY\r\n",
+        "  confidence_a_to_b DESC;\r\n"
+      ],
+      "parameters": [
+        {
+          "displayName": "mba_item_type",
+          "keyword": "mba_item_type",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "product_id"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "abc3ed5f",
+      "displayName": "series_option",
+      "queryLines": [
+        "SELECT 'category' AS series_option\r\n",
+        "UNION ALL\r\n",
+        "SELECT 'brand' AS series_option\r\n",
+        "UNION ALL\r\n",
+        "SELECT 'category-brand' AS series_option\r\n",
+        "UNION ALL\r\n",
+        "SELECT 'product_id' AS series_option\r\n"
+      ]
+    },
+    {
+      "name": "4899b729",
+      "displayName": "Period Selection Options",
+      "queryLines": [
+        "SELECT 'daily' AS period_option\r\n",
+        "UNION ALL\r\n",
+        "SELECT 'weekly' AS period_option\r\n",
+        "UNION ALL\r\n",
+        "SELECT 'monthly' AS period_option\r\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "12f621c6",
+      "displayName": "Global Filters",
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS"
+    },
+    {
+      "name": "04f3ca2b",
+      "displayName": "Performance",
+      "layout": [
+        {
+          "widget": {
+            "name": "6b14bc4f",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "sum(total_views)",
+                      "expression": "SUM(`total_views`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "Sum of total_views",
+                  "fieldName": "sum(total_views)",
+                  "format": {
+                    "abbreviation": "none",
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Views"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "4243dc1e",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "measure(conversion)",
+                      "expression": "MEASURE(`conversion`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "conversion",
+                  "fieldName": "measure(conversion)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Overall Conversion Rate"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "83bba12f",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "measure(cart_conversion_rate)",
+                      "expression": "MEASURE(`cart_conversion_rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "cart_conversion_rate",
+                  "fieldName": "measure(cart_conversion_rate)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cart Conversion Rate"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "a67075bd",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "measure(carts)",
+                      "expression": "MEASURE(`carts`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "carts",
+                  "fieldName": "measure(carts)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Add to Carts"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "8a941b55",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "measure(checkouts)",
+                      "expression": "MEASURE(`checkouts`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "checkouts",
+                  "fieldName": "measure(checkouts)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Checkouts"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "5bf5a903",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "measure(revenue)",
+                      "expression": "MEASURE(`revenue`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "revenue",
+                  "fieldName": "measure(revenue)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-currency"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Revenue"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "21b73905",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "measure(cart_addition_rate)",
+                      "expression": "MEASURE(`cart_addition_rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "cart_addition_rate",
+                  "fieldName": "measure(cart_addition_rate)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cart Addition Rate"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "cb7dc101",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "measure(conversion)",
+                      "expression": "MEASURE(`conversion`)"
+                    },
+                    {
+                      "name": "dimension",
+                      "expression": "`dimension`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "axis": {
+                    "hideLabels": true,
+                    "hideTitle": true
+                  },
+                  "displayName": "conversion",
+                  "fieldName": "measure(conversion)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  },
+                  "scale": {
+                    "reverse": false,
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "dimension",
+                  "fieldName": "dimension",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Overall Conversion by Category, Brand and Product"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "3131043d",
+            "queries": [
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9192e99e4aad4bf2ac0ee_series_option",
+                "query": {
+                  "datasetName": "abc3ed5f",
+                  "fields": [
+                    {
+                      "name": "series_option",
+                      "expression": "`series_option`"
+                    },
+                    {
+                      "name": "series_option_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b918f687623fce1128bb52_series",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "parameters": [
+                    {
+                      "name": "series",
+                      "keyword": "series"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05d8711cf18a4878fe8b9e9d95754_series",
+                "query": {
+                  "datasetName": "7e69face",
+                  "parameters": [
+                    {
+                      "name": "series",
+                      "keyword": "series"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "series",
+                    "queryName": "parameter_dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b918f687623fce1128bb52_series"
+                  },
+                  {
+                    "displayName": "series_option",
+                    "fieldName": "series_option",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9192e99e4aad4bf2ac0ee_series_option"
+                  },
+                  {
+                    "parameterName": "series",
+                    "queryName": "parameter_dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05d8711cf18a4878fe8b9e9d95754_series"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "GroupBy"
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "90098e18",
+            "queries": [
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b918f687623fce1128bb52_date",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b918bc953ca01d9fdfdc9c_calendar_date",
+                "query": {
+                  "datasetName": "cb4b3869",
+                  "fields": [
+                    {
+                      "name": "calendar_date",
+                      "expression": "`calendar_date`"
+                    },
+                    {
+                      "name": "calendar_date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b919139d5457ed6515b66e_date",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05d8711cf18a4878fe8b9e9d95754_date",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "displayName": "date",
+                    "fieldName": "date",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b918f687623fce1128bb52_date"
+                  },
+                  {
+                    "displayName": "calendar_date",
+                    "fieldName": "calendar_date",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b918bc953ca01d9fdfdc9c_calendar_date"
+                  },
+                  {
+                    "displayName": "date",
+                    "fieldName": "date",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b919139d5457ed6515b66e_date"
+                  },
+                  {
+                    "displayName": "date",
+                    "fieldName": "date",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05d8711cf18a4878fe8b9e9d95754_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": false
+              },
+              "selection": {
+                "defaultSelection": {
+                  "range": {
+                    "dataType": "DATE",
+                    "max": {
+                      "value": "2020-04-30T23:59:59.999"
+                    },
+                    "min": {
+                      "value": "2019-10-01T00:00:00.000"
+                    }
+                  }
+                }
+              },
+              "version": 2,
+              "widgetType": "filter-date-range-picker"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "10173b14",
+            "queries": [
+              {
+                "name": "dashboards/01f056445a6011aaa1914399e0e99f78/datasets/01f0571eb2ca109cb06e474d4bcdb7e6_period_option",
+                "query": {
+                  "datasetName": "4899b729",
+                  "fields": [
+                    {
+                      "name": "period_option",
+                      "expression": "`period_option`"
+                    },
+                    {
+                      "name": "period_option_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f056445a6011aaa1914399e0e99f78/datasets/01f056445a601860afcd771da923147c_period",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "parameters": [
+                    {
+                      "name": "period",
+                      "keyword": "period"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "period",
+                    "queryName": "parameter_dashboards/01f056445a6011aaa1914399e0e99f78/datasets/01f056445a601860afcd771da923147c_period"
+                  },
+                  {
+                    "displayName": "period_option",
+                    "fieldName": "period_option",
+                    "queryName": "dashboards/01f056445a6011aaa1914399e0e99f78/datasets/01f0571eb2ca109cb06e474d4bcdb7e6_period_option"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Period"
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "a2d3bce1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "period_label",
+                      "expression": "`period_label`"
+                    },
+                    {
+                      "name": "measure(revenue)",
+                      "expression": "MEASURE(`revenue`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "period_label",
+                  "fieldName": "period_label",
+                  "scale": {
+                    "sort": {
+                      "by": "custom-order",
+                      "orderedValues": [
+                        "Oct",
+                        "Nov",
+                        "Dec",
+                        "Jan",
+                        "Feb",
+                        "Mar",
+                        "Apr"
+                      ]
+                    },
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideLabels": true,
+                    "hideTitle": true
+                  },
+                  "displayName": "revenue",
+                  "fieldName": "measure(revenue)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Revenue by Daily, Weekly and Monthly"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 4,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "140581a3",
+            "queries": [
+              {
+                "name": "parameter_dashboards/01f056445a6011aaa1914399e0e99f78/datasets/01f056445a601860afcd771da923147c_top_n",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "parameters": [
+                    {
+                      "name": "top_n",
+                      "keyword": "top_n"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "top_n",
+                    "queryName": "parameter_dashboards/01f056445a6011aaa1914399e0e99f78/datasets/01f056445a601860afcd771da923147c_top_n"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Top N"
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "244c29b7",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "measure(Bounce_Rate)",
+                      "expression": "MEASURE(`Bounce_Rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "Bounce_Rate",
+                  "fieldName": "measure(Bounce_Rate)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Bounce Rate"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "3a79e390",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "sum(total_orders)",
+                      "expression": "SUM(`total_orders`)"
+                    },
+                    {
+                      "name": "dimension",
+                      "expression": "`dimension`"
+                    },
+                    {
+                      "name": "measure(conversion)",
+                      "expression": "MEASURE(`conversion`)"
+                    },
+                    {
+                      "name": "measure(cart_conversion_rate)",
+                      "expression": "MEASURE(`cart_conversion_rate`)"
+                    },
+                    {
+                      "name": "measure(cart_addition_rate)",
+                      "expression": "MEASURE(`cart_addition_rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "angle": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "Orders",
+                  "fieldName": "sum(total_orders)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "displayName": "dimension",
+                  "fieldName": "dimension",
+                  "legend": {
+                    "hideTitle": true
+                  },
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "extra": [
+                  {
+                    "displayName": "conversion",
+                    "fieldName": "measure(conversion)",
+                    "format": {
+                      "decimalPlaces": {
+                        "places": 0,
+                        "type": "max"
+                      },
+                      "type": "number-percent"
+                    }
+                  },
+                  {
+                    "displayName": "cart_conversion_rate",
+                    "fieldName": "measure(cart_conversion_rate)",
+                    "format": {
+                      "decimalPlaces": {
+                        "places": 0,
+                        "type": "max"
+                      },
+                      "type": "number-percent"
+                    }
+                  },
+                  {
+                    "displayName": "cart_addition_rate",
+                    "fieldName": "measure(cart_addition_rate)",
+                    "format": {
+                      "decimalPlaces": {
+                        "places": 0,
+                        "type": "max"
+                      },
+                      "type": "number-percent"
+                    }
+                  }
+                ],
+                "label": {
+                  "show": true
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Orders by Category, Brand & Product_id"
+              },
+              "version": 3,
+              "widgetType": "pie"
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 10,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "327ab798",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "period_label",
+                      "expression": "`period_label`"
+                    },
+                    {
+                      "name": "measure(views)",
+                      "expression": "MEASURE(`views`)"
+                    },
+                    {
+                      "name": "measure(carts)",
+                      "expression": "MEASURE(`carts`)"
+                    },
+                    {
+                      "name": "measure(checkouts)",
+                      "expression": "MEASURE(`checkouts`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "color": {
+                  "legend": {
+                    "position": "bottom"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "period_label",
+                  "fieldName": "period_label",
+                  "scale": {
+                    "sort": {
+                      "by": "custom-order",
+                      "orderedValues": [
+                        "Oct",
+                        "Nov",
+                        "Dec",
+                        "Jan",
+                        "Feb",
+                        "Mar",
+                        "Apr"
+                      ]
+                    },
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideLabels": true,
+                    "hideTitle": true
+                  },
+                  "fields": [
+                    {
+                      "displayName": "views",
+                      "fieldName": "measure(views)"
+                    },
+                    {
+                      "displayName": "carts",
+                      "fieldName": "measure(carts)"
+                    },
+                    {
+                      "displayName": "checkouts",
+                      "fieldName": "measure(checkouts)"
+                    }
+                  ],
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Monthly Funnel for Views, Add_to_Carts & Checkouts"
+              },
+              "mark": {
+                "colors": [
+                  {
+                    "position": 1,
+                    "themeColorType": "visualizationColors"
+                  },
+                  {
+                    "position": 2,
+                    "themeColorType": "visualizationColors"
+                  },
+                  {
+                    "position": 3,
+                    "themeColorType": "visualizationColors"
+                  },
+                  {
+                    "position": 4,
+                    "themeColorType": "visualizationColors"
+                  },
+                  {
+                    "position": 5,
+                    "themeColorType": "visualizationColors"
+                  },
+                  {
+                    "position": 6,
+                    "themeColorType": "visualizationColors"
+                  },
+                  {
+                    "position": 7,
+                    "themeColorType": "visualizationColors"
+                  }
+                ],
+                "layout": "group"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 4,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "f7ebcea2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "measure(AOV)",
+                      "expression": "MEASURE(`AOV`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "AOV",
+                  "fieldName": "measure(AOV)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-currency"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "AOV"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "00d58449",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "weekly(date)",
+                      "expression": "DATE_TRUNC(\"WEEK\", `date`)"
+                    },
+                    {
+                      "name": "measure(cart_addition_rate)",
+                      "expression": "MEASURE(`cart_addition_rate`)"
+                    },
+                    {
+                      "name": "measure(cart_conversion_rate)",
+                      "expression": "MEASURE(`cart_conversion_rate`)"
+                    },
+                    {
+                      "name": "measure(conversion)",
+                      "expression": "MEASURE(`conversion`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": false
+                },
+                "x": {
+                  "displayName": "date",
+                  "fieldName": "weekly(date)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "fields": [
+                    {
+                      "displayName": "CAR",
+                      "fieldName": "measure(cart_addition_rate)"
+                    },
+                    {
+                      "displayName": "CCR",
+                      "fieldName": "measure(cart_conversion_rate)"
+                    },
+                    {
+                      "displayName": "Conv",
+                      "fieldName": "measure(conversion)"
+                    }
+                  ],
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cart Addition, Cart Conversion & Overall Conersion by Weeks"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 10,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "dd034260",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7e69face",
+                  "fields": [
+                    {
+                      "name": "measure(Cart_Abandonment_Rate)",
+                      "expression": "MEASURE(`Cart_Abandonment_Rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "Cart_Abandonment_Rate",
+                  "fieldName": "measure(Cart_Abandonment_Rate)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cart Abandonment Rate"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "7a93e235",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "monthly(date)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `date`)"
+                    },
+                    {
+                      "name": "sum(total_orders)",
+                      "expression": "SUM(`total_orders`)"
+                    },
+                    {
+                      "name": "measure(AOV)",
+                      "expression": "MEASURE(`AOV`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "date",
+                  "fieldName": "monthly(date)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "axis": {
+                      "hideLabels": true,
+                      "hideTitle": true
+                    },
+                    "fields": [
+                      {
+                        "displayName": "Orders",
+                        "fieldName": "sum(total_orders)"
+                      }
+                    ],
+                    "format": {
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "places": 0,
+                        "type": "max"
+                      },
+                      "type": "number-plain"
+                    },
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  },
+                  "secondary": {
+                    "axis": {
+                      "hideLabels": true,
+                      "hideTitle": true
+                    },
+                    "fields": [
+                      {
+                        "displayName": "AOV",
+                        "fieldName": "measure(AOV)"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Orders and AOV by Month"
+              },
+              "version": 1,
+              "widgetType": "combo"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 16,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "d209be22",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "measure(revenue)",
+                      "expression": "MEASURE(`revenue`)"
+                    },
+                    {
+                      "name": "dimension",
+                      "expression": "`dimension`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "axis": {
+                    "hideLabels": true,
+                    "hideTitle": true
+                  },
+                  "displayName": "revenue",
+                  "fieldName": "measure(revenue)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-currency"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "dimension",
+                  "fieldName": "dimension",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Revenue by Category, Brand and Product"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "a99b7a49",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "measure(Cart_Abandonment_Rate)",
+                      "expression": "MEASURE(`Cart_Abandonment_Rate`)"
+                    },
+                    {
+                      "name": "dimension",
+                      "expression": "`dimension`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "axis": {
+                    "hideLabels": true,
+                    "hideTitle": true
+                  },
+                  "displayName": "Cart_Abandonment_Rate",
+                  "fieldName": "measure(Cart_Abandonment_Rate)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  },
+                  "scale": {
+                    "domain": {
+                      "max": 1,
+                      "min": 0
+                    },
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "dimension",
+                  "fieldName": "dimension",
+                  "scale": {
+                    "sort": {
+                      "by": "x-reversed"
+                    },
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Category, Brand and Product by Cart Abandonmnet Rate"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 16,
+            "width": 2,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "2a631c78",
+      "displayName": "Engagement Summary",
+      "layout": [
+        {
+          "widget": {
+            "name": "fc2db68a",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "sum(total_sessions)",
+                      "expression": "SUM(`total_sessions`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "Sum of total_sessions",
+                  "fieldName": "sum(total_sessions)",
+                  "format": {
+                    "abbreviation": "none",
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Sessions"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "9733e848",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "measure(avg_views)",
+                      "expression": "MEASURE(`avg_views`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "avg_views",
+                  "fieldName": "measure(avg_views)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Avg Views Per Session"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "dcc5d34a",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "measure(avg_session_duration_in_min)",
+                      "expression": "MEASURE(`avg_session_duration_in_min`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "avg_session_duration_in_min",
+                  "fieldName": "measure(avg_session_duration_in_min)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Avg Session Duration in minutes"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "c7a51ac2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "measure(Avg_Session_Engagement_Score)",
+                      "expression": "MEASURE(`Avg_Session_Engagement_Score`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "Avg_Session_Engagement_Score",
+                  "fieldName": "measure(Avg_Session_Engagement_Score)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "frame": {
+                "description": "A higher score indicates a more valuable and engaged session",
+                "showDescription": true,
+                "showTitle": true,
+                "title": "Session Engagement Score"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "f24427f3",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "sum(new_single_view_sessions)",
+                      "expression": "SUM(`new_single_view_sessions`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "Sum of new_single_view_sessions",
+                  "fieldName": "sum(new_single_view_sessions)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Single-View Sessions"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "9d28c72b",
+            "queries": [
+              {
+                "name": "dashboards/01f04b4e0a14173192480a39326a4fea/datasets/01f04dd3f244191ba511af1d9e50bbcf_date",
+                "query": {
+                  "datasetName": "c8f5401a",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f04b4e0a14173192480a39326a4fea/datasets/01f0518f1c2c1e37b59f0b6263087cb3_calendar_date",
+                "query": {
+                  "datasetName": "cb4b3869",
+                  "fields": [
+                    {
+                      "name": "calendar_date",
+                      "expression": "`calendar_date`"
+                    },
+                    {
+                      "name": "calendar_date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f04b4e0a14173192480a39326a4fea/datasets/01f051a144571a3fa8ee233eb290f3d9_date",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "displayName": "date",
+                    "fieldName": "date",
+                    "queryName": "dashboards/01f04b4e0a14173192480a39326a4fea/datasets/01f04dd3f244191ba511af1d9e50bbcf_date"
+                  },
+                  {
+                    "displayName": "calendar_date",
+                    "fieldName": "calendar_date",
+                    "queryName": "dashboards/01f04b4e0a14173192480a39326a4fea/datasets/01f0518f1c2c1e37b59f0b6263087cb3_calendar_date"
+                  },
+                  {
+                    "displayName": "date",
+                    "fieldName": "date",
+                    "queryName": "dashboards/01f04b4e0a14173192480a39326a4fea/datasets/01f051a144571a3fa8ee233eb290f3d9_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": false
+              },
+              "selection": {
+                "defaultSelection": {
+                  "range": {
+                    "dataType": "DATE",
+                    "max": {
+                      "value": "2020-04-30T23:59:59.999"
+                    },
+                    "min": {
+                      "value": "2019-10-01T00:00:00.000"
+                    }
+                  }
+                }
+              },
+              "version": 2,
+              "widgetType": "filter-date-range-picker"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "02496b32",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "monthly(date)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `date`)"
+                    },
+                    {
+                      "name": "measure(avg_revenue)",
+                      "expression": "MEASURE(`avg_revenue`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "date",
+                  "fieldName": "monthly(date)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideLabels": true,
+                    "hideTitle": true
+                  },
+                  "displayName": "avg_revenue",
+                  "fieldName": "measure(avg_revenue)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-currency"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Avg Revenue Per Session"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "86c2063c",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "weekly(date)",
+                      "expression": "DATE_TRUNC(\"WEEK\", `date`)"
+                    },
+                    {
+                      "name": "sum(new_sessions)",
+                      "expression": "SUM(`new_sessions`)"
+                    },
+                    {
+                      "name": "sum(new_single_view_sessions)",
+                      "expression": "SUM(`new_single_view_sessions`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": false
+                },
+                "x": {
+                  "displayName": "date",
+                  "fieldName": "weekly(date)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fields": [
+                    {
+                      "displayName": "New Sessions",
+                      "fieldName": "sum(new_sessions)"
+                    },
+                    {
+                      "displayName": "Single View Sessions",
+                      "fieldName": "sum(new_single_view_sessions)"
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "New Sessions vs Single-View Sessions Over Time"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "bcfc0ad0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "measure(Bounce_Rate)",
+                      "expression": "MEASURE(`Bounce_Rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "Bounce_Rate",
+                  "fieldName": "measure(Bounce_Rate)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Bounce Rate"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "0b4245ed",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "monthly(date)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `date`)"
+                    },
+                    {
+                      "name": "sum(total_sessions)",
+                      "expression": "SUM(`total_sessions`)"
+                    },
+                    {
+                      "name": "sum(new_sessions)",
+                      "expression": "SUM(`new_sessions`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "x": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "date",
+                  "fieldName": "monthly(date)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "displayName": "Total Sessions",
+                        "fieldName": "sum(total_sessions)"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "displayName": "New Sessions",
+                        "fieldName": "sum(new_sessions)"
+                      }
+                    ],
+                    "scale": {
+                      "type": "quantitative"
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Sessions vs New Sessions by Month"
+              },
+              "version": 3,
+              "widgetType": "bar"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "9822a7ee",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "weekly(date)",
+                      "expression": "DATE_TRUNC(\"WEEK\", `date`)"
+                    },
+                    {
+                      "name": "measure(Avg_Session_Engagement_Score)",
+                      "expression": "MEASURE(`Avg_Session_Engagement_Score`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "label": {
+                  "show": false
+                },
+                "x": {
+                  "displayName": "date",
+                  "fieldName": "weekly(date)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "displayName": "Avg_Session_Engagement_Score",
+                  "fieldName": "measure(Avg_Session_Engagement_Score)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Session Engagement Score Over Time"
+              },
+              "version": 3,
+              "widgetType": "line"
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 10,
+            "width": 2,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "25089ad0",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "measure(avg_revenue)",
+                      "expression": "MEASURE(`avg_revenue`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "avg_revenue",
+                  "fieldName": "measure(avg_revenue)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-currency"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Avg Revenue Per Session"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "336c1c8f",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "5fd99b79",
+                  "fields": [
+                    {
+                      "name": "sum(new_sessions)",
+                      "expression": "SUM(`new_sessions`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "Sum of new_sessions",
+                  "fieldName": "sum(new_sessions)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "New Sessions"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "599b51e9",
+      "displayName": "Customer Retention",
+      "layout": [
+        {
+          "widget": {
+            "name": "71f0d44a",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "edead479",
+                  "fields": [
+                    {
+                      "name": "measure(Retention%)",
+                      "expression": "MEASURE(`Retention%`)"
+                    },
+                    {
+                      "name": "month_number",
+                      "expression": "`month_number`"
+                    },
+                    {
+                      "name": "cohort_month",
+                      "expression": "`cohort_month`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "color": {
+                  "displayName": "Retention%",
+                  "fieldName": "measure(Retention%)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "exact"
+                    },
+                    "hideGroupSeparator": true,
+                    "type": "number-percent"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "label": {
+                  "show": true
+                },
+                "x": {
+                  "displayName": "month_number",
+                  "fieldName": "month_number",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "axis": {
+                    "hideLabels": false
+                  },
+                  "displayName": "cohort_month",
+                  "fieldName": "cohort_month",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                }
+              },
+              "version": 3,
+              "widgetType": "heatmap"
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 4,
+            "width": 4,
+            "height": 9
+          }
+        },
+        {
+          "widget": {
+            "name": "b7e3adf9",
+            "queries": [
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9194584b2f832cf24e0f6_cohort_category",
+                "query": {
+                  "datasetName": "edead479",
+                  "fields": [
+                    {
+                      "name": "cohort_category",
+                      "expression": "`cohort_category`"
+                    },
+                    {
+                      "name": "cohort_category_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "displayName": "cohort_category",
+                    "fieldName": "cohort_category",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9194584b2f832cf24e0f6_cohort_category"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Category"
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "5d438cd3",
+            "queries": [
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9194584b2f832cf24e0f6_cohort_brand",
+                "query": {
+                  "datasetName": "edead479",
+                  "fields": [
+                    {
+                      "name": "cohort_brand",
+                      "expression": "`cohort_brand`"
+                    },
+                    {
+                      "name": "cohort_brand_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "displayName": "cohort_brand",
+                    "fieldName": "cohort_brand",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9194584b2f832cf24e0f6_cohort_brand"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Brand"
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "3e6677d5",
+            "queries": [
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9194584b2f832cf24e0f6_year",
+                "query": {
+                  "datasetName": "edead479",
+                  "fields": [
+                    {
+                      "name": "year",
+                      "expression": "`year`"
+                    },
+                    {
+                      "name": "year_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "displayName": "year",
+                    "fieldName": "year",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9194584b2f832cf24e0f6_year"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Year"
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "0a594629",
+            "queries": [
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9194584b2f832cf24e0f6_Month",
+                "query": {
+                  "datasetName": "edead479",
+                  "fields": [
+                    {
+                      "name": "Month",
+                      "expression": "`Month`"
+                    },
+                    {
+                      "name": "Month_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "displayName": "Month",
+                    "fieldName": "Month",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05af767b9194584b2f832cf24e0f6_Month"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Month"
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "f24c9048",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bcb2c9bf",
+                  "fields": [
+                    {
+                      "name": "measure(total_customers)",
+                      "expression": "MEASURE(`total_customers`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "total_customers",
+                  "fieldName": "measure(total_customers)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Customers"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "e6930b73",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bcb2c9bf",
+                  "fields": [
+                    {
+                      "name": "measure(total_new_customers)",
+                      "expression": "MEASURE(`total_new_customers`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "total_new_customers",
+                  "fieldName": "measure(total_new_customers)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "New Customers"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "a7df4983",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bcb2c9bf",
+                  "fields": [
+                    {
+                      "name": "measure(loyal_customers_%)",
+                      "expression": "MEASURE(`loyal_customers_%`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "loyal_customers_%",
+                  "fieldName": "measure(loyal_customers_%)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Loyal Customers %"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ed0293fc",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bcb2c9bf",
+                  "fields": [
+                    {
+                      "name": "measure(total_repeat_customers)",
+                      "expression": "MEASURE(`total_repeat_customers`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "total_repeat_customers",
+                  "fieldName": "measure(total_repeat_customers)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Repeat Customers"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "44486234",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bcb2c9bf",
+                  "fields": [
+                    {
+                      "name": "measure(total_loyal_customers)",
+                      "expression": "MEASURE(`total_loyal_customers`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "total_loyal_customers",
+                  "fieldName": "measure(total_loyal_customers)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Loyal Customers"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "a125b653",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bcb2c9bf",
+                  "fields": [
+                    {
+                      "name": "measure(new_customers_%)",
+                      "expression": "MEASURE(`new_customers_%`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "new_customers_%",
+                  "fieldName": "measure(new_customers_%)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "New Customers %"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "422d3d59",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "bcb2c9bf",
+                  "fields": [
+                    {
+                      "name": "measure(repeat_customers_%)",
+                      "expression": "MEASURE(`repeat_customers_%`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "value": {
+                  "displayName": "repeat_customers_%",
+                  "fieldName": "measure(repeat_customers_%)",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 0,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Repeat Customers %"
+              },
+              "version": 2,
+              "widgetType": "counter"
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "ca087e36",
+      "displayName": "Market Basket",
+      "layout": [
+        {
+          "widget": {
+            "name": "62f8bd4d",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "3bb97ca4",
+                  "fields": [
+                    {
+                      "name": "row_item",
+                      "expression": "`row_item`"
+                    },
+                    {
+                      "name": "column_item",
+                      "expression": "`column_item`"
+                    },
+                    {
+                      "name": "confidence_a_to_b",
+                      "expression": "`confidence_a_to_b`"
+                    }
+                  ],
+                  "cubeGroupingSets": {
+                    "sets": [
+                      {
+                        "fieldNames": [
+                          "row_item"
+                        ]
+                      },
+                      {
+                        "fieldNames": [
+                          "column_item"
+                        ]
+                      }
+                    ]
+                  },
+                  "disaggregated": true,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`row_item`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`column_item`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "cell": {
+                  "fields": [
+                    {
+                      "cellType": "text",
+                      "contentAlignment": "center",
+                      "displayName": "confidence_a_to_b",
+                      "fieldName": "confidence_a_to_b",
+                      "format": {
+                        "decimalPlaces": {
+                          "places": 2,
+                          "type": "exact"
+                        },
+                        "hideGroupSeparator": true,
+                        "type": "number-percent"
+                      },
+                      "style": {
+                        "backgroundColor": {
+                          "scale": {
+                            "type": "quantitative"
+                          }
+                        },
+                        "type": "color-scale"
+                      }
+                    }
+                  ],
+                  "type": "multi-cell",
+                  "width": 90
+                },
+                "columns": [
+                  {
+                    "displayName": "column_item",
+                    "fieldName": "column_item"
+                  }
+                ],
+                "rows": [
+                  {
+                    "displayName": "row_item",
+                    "fieldName": "row_item"
+                  }
+                ]
+              },
+              "version": 3,
+              "widgetType": "pivot"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 9
+          }
+        },
+        {
+          "widget": {
+            "name": "4c0f5582",
+            "queries": [
+              {
+                "name": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05e242e5617df908c6f473aff4057_series_option",
+                "query": {
+                  "datasetName": "abc3ed5f",
+                  "fields": [
+                    {
+                      "name": "series_option",
+                      "expression": "`series_option`"
+                    },
+                    {
+                      "name": "series_option_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f06175f7351939a2454a720df11da6_mba_item_type",
+                "query": {
+                  "datasetName": "59712f98",
+                  "parameters": [
+                    {
+                      "name": "mba_item_type",
+                      "keyword": "mba_item_type"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05e242e5617d3a6d91a9c11ade70e_mba_item_type",
+                "query": {
+                  "datasetName": "3bb97ca4",
+                  "parameters": [
+                    {
+                      "name": "mba_item_type",
+                      "keyword": "mba_item_type"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "encodings": {
+                "fields": [
+                  {
+                    "displayName": "series_option",
+                    "fieldName": "series_option",
+                    "queryName": "dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05e242e5617df908c6f473aff4057_series_option"
+                  },
+                  {
+                    "parameterName": "mba_item_type",
+                    "queryName": "parameter_dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f06175f7351939a2454a720df11da6_mba_item_type"
+                  },
+                  {
+                    "parameterName": "mba_item_type",
+                    "queryName": "parameter_dashboards/01f05af767b91226b27faa657d46f3b4/datasets/01f05e242e5617d3a6d91a9c11ade70e_mba_item_type"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Dimension"
+              },
+              "version": 2,
+              "widgetType": "filter-single-select"
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 9,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "c31d140c",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "59712f98",
+                  "fields": [
+                    {
+                      "name": "confidence_a_to_b",
+                      "expression": "`confidence_a_to_b`"
+                    },
+                    {
+                      "name": "dimension",
+                      "expression": "`dimension`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "confidence_a_to_b",
+                  "format": {
+                    "decimalPlaces": {
+                      "places": 2,
+                      "type": "max"
+                    },
+                    "type": "number-percent"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "confidence_a_to_b"
+                },
+                "y": {
+                  "fieldName": "dimension",
+                  "axis": {
+                    "labelAngle": 45
+                  },
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "x-reversed"
+                    }
+                  },
+                  "displayName": "dimension"
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 6,
+            "height": 9
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#FFFFFF",
+        "dark": "#11171C"
+      },
+      "widgetBackgroundColor": {
+        "light": "#FFFFFF",
+        "dark": "#11171C"
+      },
+      "widgetBorderColor": {
+        "light": "#FFFFFF",
+        "dark": "#11171C"
+      },
+      "fontColor": {
+        "light": "#11171C",
+        "dark": "#E8ECF0"
+      },
+      "selectionColor": {
+        "light": "#2272B4",
+        "dark": "#8ACAFF"
+      },
+      "visualizationColors": [
+        "#077A9D",
+        "#FFAB00",
+        "#00A972",
+        "#FF3621",
+        "#8BCAE7",
+        "#AB4057",
+        "#99DDB4",
+        "#FCA4A1",
+        "#919191",
+        "#BF7080"
+      ],
+      "widgetHeaderAlignment": "LEFT"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+resources:
+  dashboards:
+    ecom_marketplace_dashboard:
+      display_name: "Ecom_Marketplace_Dashboard"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ../src/dashboard/Ecom_Marketplace_Dashboard.lvdash.json

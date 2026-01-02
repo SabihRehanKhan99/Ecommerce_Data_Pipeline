@@ -1,0 +1,66 @@
+# This workflow validates, deploys, and runs the specified bundle
+# within a production target named "prod".
+name: 'Production deployment'
+
+# Ensure that only a single job or workflow using the same concurrency group
+# runs at a time.
+concurrency:
+  group: 'production'
+  cancel-in-progress: false
+
+# Trigger this workflow whenever a pull request is pushed to the repo's
+# main branch.
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - .github/**
+
+jobs:
+  deploy:
+    name: 'Deploy bundle'
+    runs-on: ubuntu-latest
+
+    steps:
+      # Check out this repo, so that this workflow can access it.
+      - uses: actions/checkout@v3
+
+      # Download the Databricks CLI.
+      # See https://github.com/databricks/setup-cli
+      - uses: databricks/setup-cli@main
+
+      # Deploy the bundle to the "prod" target as defined
+      # in the bundle's settings file.
+      - run: databricks bundle deploy --target ${{ env.DATABRICKS_BUNDLE_ENV }}
+        working-directory: .
+        env:
+          DATABRICKS_TOKEN: ${{ secrets.UB_TOKEN }}
+          DATABRICKS_BUNDLE_ENV: dev
+
+  # Validate, deploy, and then run the bundle.
+  pipeline_update:
+    name: 'Run pipeline update'
+    runs-on: ubuntu-latest
+
+    # Run the "deploy" job first.
+    needs:
+      - deploy
+
+    steps:
+      # Check out this repo, so that this workflow can access it.
+      - uses: actions/checkout@v3
+
+      # Use the downloaded Databricks CLI.
+      - uses: databricks/setup-cli@main
+
+      # Run the Databricks workflow named "orchestration_job" as defined in the
+      # bundle that was just deployed.
+      # In order to run the orchestration job using bigquery as source, we need to pass the
+      # "orchestration_data_source" parameter, which is set to "kaggle" by default.
+      # databricks bundle run orchestration_job --target ${{ env.DATABRICKS_BUNDLE_ENV }} --params orchestration_data_source="bigquery" --refresh-all --no-wait
+      - run: databricks bundle run orchestration_job --target ${{ env.DATABRICKS_BUNDLE_ENV }} --refresh-all --no-wait
+        working-directory: .
+        env:
+          DATABRICKS_TOKEN: ${{ secrets.UB_TOKEN }}
+          DATABRICKS_BUNDLE_ENV: dev
