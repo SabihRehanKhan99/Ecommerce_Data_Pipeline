@@ -4,26 +4,29 @@ dist/
 __pycache__/
 *.egg-info
 .venv/
+
 scratch/**
 !scratch/README.md
+
 *.DS_Store
+
 src/feature_engineering/**
 src/training/**
 src/validation/**
 tests/**
 __init__.py
 deployment/**
-scratch/**
 monitoring/**
+
 resources/batch-inference-workflow-resource.yml
 resources/feature-engineering-workflow-resource.yml
 resources/ml-artifacts-resource.yml
 resources/model-workflow-resource.yml
 resources/monitoring-resource.yml
+
 # =========================
 # Databricks
 # =========================
-.databricks/
 bundle/
 .deploy/
 .logs/
@@ -31,33 +34,21 @@ bundle/
 # =========================
 # Python
 # =========================
-__pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.egg-info/
 .eggs/
-build/
-dist/
 
 # =========================
 # Virtual Environments
 # =========================
-.venv/
 venv/
 env/
 
 # =========================
 # OS / Editor
 # =========================
-.DS_Store
 .vscode/
-
-# =========================
-# Local & Temp
-# =========================
-scratch/**
-!scratch/README.md
 
 # =========================
 # Secrets
@@ -75,6 +66,6 @@ htmlcov/
 .pytest_cache/
 
 # =========================
-# Data Outputs (if any)
+# Data Outputs
 # =========================
 data/
